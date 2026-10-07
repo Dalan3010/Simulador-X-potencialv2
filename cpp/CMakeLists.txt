@@ -31,6 +31,13 @@ if(DIPOLE_BUILD_GUI)
     set(SUPPORT_SCREEN_CAPTURE OFF CACHE BOOL "" FORCE)
     set(SUPPORT_GIF_RECORDING OFF CACHE BOOL "" FORCE)
     set(SUPPORT_CLIPBOARD_IMAGE OFF CACHE BOOL "" FORCE)
+    # Prefer a pre-populated local raylib 5.5 tree when one is available, so a
+    # bare configure does not have to clone the whole upstream repository. An
+    # explicit -DFETCHCONTENT_SOURCE_DIR_RAYLIB=... always wins.
+    if(NOT FETCHCONTENT_SOURCE_DIR_RAYLIB
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build-offline/vendor/raylib/CMakeLists.txt")
+      set(FETCHCONTENT_SOURCE_DIR_RAYLIB "${CMAKE_CURRENT_SOURCE_DIR}/build-offline/vendor/raylib")
+    endif()
     FetchContent_Declare(raylib
       GIT_REPOSITORY https://github.com/raysan5/raylib.git
       GIT_TAG 5.5
