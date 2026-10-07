@@ -12,6 +12,7 @@ Vec3 operator*(Vec3 a, double s);
 double length(Vec3 a);
 struct Parameters {
     double q = 1, k = 8.99, d = 2, azimuth = 0, polar = 90;
+    int chargeCount = 2; // Source selector: 1 = single charge, 2 = dipole.
     Vec3 center;
     double xmin = -5, xmax = 5, ymin = -5, ymax = 5;
     int resolution = 70, fieldDensity = 14;
@@ -27,17 +28,19 @@ struct Parameters {
 std::string validate(const Parameters& p);
 struct Charges { Vec3 plus, minus; };
 Charges charges(const Parameters& p);
+// Hidden length scale: dipole separation, or half the smaller domain span for a single charge.
+double referenceLength(const Parameters& p);
 double softening(const Parameters& p);
 double potential(Vec3 point, const Parameters& p);
 Vec3 field(Vec3 point, const Parameters& p);
 struct StreamlineOptions {
     int seedCount = 16;
-    double seedAngleDegrees = 60; // Angle from the positive dipole axis.
-    double seedRadius = .08;      // Relative to charge separation.
-    double stepSize = .02;        // Arc-length step relative to charge separation.
-    double endpointRadius = .08;  // Termination radius relative to separation.
-    double escapeRadius = 8;      // Escape radius from center relative to separation.
-    double maxArcLength = 20;     // Maximum integrated arc length relative to separation.
+    double seedAngleDegrees = 60; // Angle from the positive dipole axis (dipole seeds only).
+    double seedRadius = .08;      // Relative to referenceLength().
+    double stepSize = .02;        // Arc-length step relative to referenceLength().
+    double endpointRadius = .08;  // Termination radius relative to referenceLength().
+    double escapeRadius = 8;      // Escape radius from center relative to referenceLength().
+    double maxArcLength = 20;     // Maximum integrated arc length relative to referenceLength().
     int maxSteps = 4000;
 };
 enum class StreamlineTermination { ReachedNegativeCharge, Escaped, StepLimit, ArcLengthLimit };
@@ -45,7 +48,8 @@ struct Streamline {
     std::vector<Vec3> points;
     StreamlineTermination termination = StreamlineTermination::StepLimit;
 };
-// Integrates deterministic 3D field lines from a ring of positive-charge seeds.
+// Integrates deterministic 3D field lines: a ring of seeds about the dipole axis for
+// chargeCount == 2, a Fibonacci sphere of seeds for chargeCount == 1.
 std::vector<Streamline> streamlines(const Parameters& p, const StreamlineOptions& options = {});
 struct Grid {
     int n = 0;

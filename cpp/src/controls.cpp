@@ -101,24 +101,40 @@ bool Controls::parameterRow(int index,float y) {
 bool Controls::draw() {
     bool changed = false;
     DrawRectangle(0,0,GetScreenWidth(),90,Color{24,32,46,255});
-    DrawText("Electric dipole | native C++17",15,12,22,RAYWHITE);
+    const char* title = "Electric dipole | native C++17";
+    DrawText(title,15,12,22,RAYWHITE);
+    // Source selector: two mutually exclusive buttons in the top bar, next to the title.
+    const float sourceX = 15.0f + static_cast<float>(MeasureText(title,22)) + 18.0f;
+    if (button({sourceX,8,96,32},"Dipole",parameters.chargeCount==2) && parameters.chargeCount!=2) {
+        parameters.chargeCount = 2; changed = true;
+    }
+    if (button({sourceX+104,8,134,32},"Single charge",parameters.chargeCount==1) && parameters.chargeCount!=1) {
+        parameters.chargeCount = 1; changed = true;
+    }
     const char* tabs[] = {"Potential map","Equipotentials","Vector field","Height surface","E-field lines 3D"};
     for (int i=0;i<5;++i) if (button({15.0f+i*148,47,142,32},tabs[i],view==i)) view=i;
     if (button({static_cast<float>(GetScreenWidth()-140),8,125,32},"Help / physics")) help=!help;
     DrawRectangle(0,90,static_cast<int>(sidebar),GetScreenHeight()-90,Color{24,32,46,255});
     const float areaHeight = static_cast<float>(GetScreenHeight()-170);
     const int rows=view==4 ? 8 : 14, toggles=view==4 ? 4 : 5;
-    const float contentHeight=static_cast<float>(rows*68+toggles*32+92);
+    // Filter at render time; definition indices and their switches are never renumbered.
+    const bool hideSeparation = parameters.chargeCount==1;
+    auto hidden = [&](int index) { return hideSeparation && (index==2 || index==3 || index==4); };
+    if (hidden(editing_)) editing_ = -1;
+    if (hidden(dragging_)) dragging_ = -1;
+    const int visibleRows = rows-(hideSeparation ? 3 : 0);
+    const float contentHeight=static_cast<float>(visibleRows*68+toggles*32+92);
     if (!help && GetMouseX()<sidebar && GetMouseY()>100) scroll_ -= GetMouseWheelMove()*40;
     scroll_ = std::clamp(scroll_,0.0f,std::max(0.0f,contentHeight-areaHeight));
     BeginScissorMode(0,100,static_cast<int>(sidebar),static_cast<int>(areaHeight));
     float y = 106-scroll_;
-    for (int i=0;i<rows;++i) {
-        const int index=i;
-        if (!help) changed |= parameterRow(index,y+i*68);
-        else DrawText(definitions[index].name,15,static_cast<int>(y+i*68),16,GRAY);
+    for (int index=0,rendered=0;index<rows;++index) {
+        if (hidden(index)) continue;
+        if (!help) changed |= parameterRow(index,y+rendered*68);
+        else DrawText(definitions[index].name,15,static_cast<int>(y+rendered*68),16,GRAY);
+        ++rendered;
     }
-    y += rows*68;
+    y += visibleRows*68;
     bool* planeFlags[] = {&visible.charges,&visible.labels,&visible.contours,&visible.grid,&visible.field};
     bool* streamFlags[] = {&visible.charges,&visible.labels,&visible.animationMarkers,&visible.animationPaused};
     const char* planeLabels[] = {"Show charges","Show charge labels","Show contours","Show grid","Field overlay on map"};
@@ -148,7 +164,10 @@ bool Controls::draw() {
         y+=31;
     }
     if (button({15,y,300,33},"Reset defaults") && !help && GetMouseY()>=100 && GetMouseY()<100+areaHeight) {
-        parameters = dipole::Parameters{}; visible = Visibility{}; editing_=-1; dragging_=-1; error_.clear(); changed=true;
+        // Keep exploring the current source: the reset restores parameters, not the selector.
+        const int source = parameters.chargeCount;
+        parameters = dipole::Parameters{}; parameters.chargeCount = source;
+        visible = Visibility{}; editing_=-1; dragging_=-1; error_.clear(); changed=true;
     }
     EndScissorMode();
     if (contentHeight>areaHeight) {
@@ -185,20 +204,24 @@ bool Controls::draw() {
     if (help) {
         Rectangle r{sidebar+25,115,static_cast<float>(GetScreenWidth())-sidebar-50,480};
         DrawRectangleRec(r,Color{20,29,43,250});
+        const bool single = parameters.chargeCount==1;
         const char* lines[] = {
             "Physics and numerical conventions",
-            "V = k q (1/r+ - 1/r-)  [V]",
+            single ? "V = k q (1/r)  [V]" : "V = k q (1/r+ - 1/r-)  [V]",
             "q is in nC; displayed k is in 10^9 SI units.",
             "r = sqrt(dx^2 + dy^2 + dz^2 + epsilon^2)",
-            "epsilon = max(0.001 d, 0.000001 m)",
+            single ? "epsilon = max(0.001 L, 0.000001 m); L = half the smaller domain span"
+                   : "epsilon = max(0.001 d, 0.000001 m)",
             "E = -grad V  [V/m]; centered differences, h = 0.05 epsilon.",
             "Map and field slice: physical z = center z.",
             "Contours: CPU marching squares with saddle decider.",
             "Height is visual: clamp(V / color limit, -1, 1) * H.",
             "H = 0.3 * smaller domain span; height is NOT physical z.",
-            "View 5: physical 3D lines integrate the dipole electric field.",
+            single ? "View 5: physical 3D lines integrate the single-charge electric field."
+                   : "View 5: physical 3D lines integrate the dipole electric field.",
             "Curves are cached after physical parameter changes, never per frame.",
-            "Direction markers move from +q toward -q along each field line.",
+            single ? "Direction markers move outward from the charge along each field line."
+                   : "Direction markers move from +q toward -q along each field line.",
             "Radial magnitude and volume APIs remain available in the core.",
             "Marker motion indicates direction, not actual particle velocity.",
             "Pause, hide, or adjust marker speed in the fifth-view controls.",

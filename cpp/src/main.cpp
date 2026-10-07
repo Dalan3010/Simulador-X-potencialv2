@@ -29,6 +29,7 @@ int main(int argc,char** argv) {
         }
         app::Renderer renderer; // GPU resources are destroyed before CloseWindow.
         renderer.update(controls.parameters);
+        int titleMode = controls.parameters.chargeCount;
         bool dirty=false;
         int frame=0;
         constexpr int framesPerView=8;
@@ -49,6 +50,10 @@ int main(int argc,char** argv) {
             ClearBackground(Color{232,236,242,255});
             renderer.draw(controls.viewport(),controls.view,controls.visible,controls.blocksCamera());
             dirty=controls.draw();
+            if (controls.parameters.chargeCount!=titleMode) {
+                titleMode=controls.parameters.chargeCount;
+                SetWindowTitle(titleMode==1 ? "Single charge - native simulator" : "Electric dipole - native simulator");
+            }
             EndDrawing();
             ++frame;
             if (smoke && frame==smokeStages*framesPerView) break;

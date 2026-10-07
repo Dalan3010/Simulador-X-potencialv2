@@ -67,6 +67,10 @@ void lineArrow(Vector2 a,Vector2 b,Color c) {
     DrawLineEx(b,Vector2Add(back,side),1.5f,c);
     DrawLineEx(b,Vector2Subtract(back,side),1.5f,c);
 }
+// The lone charge takes its colour and label from the sign of q; the dipole keeps +q/-q.
+bool chargeIsPositive(const dipole::Parameters& p,int index) {
+    return p.chargeCount==1 ? p.q>=0 : index==0;
+}
 }
 Renderer::Renderer() { material_=LoadMaterialDefault(); }
 Renderer::~Renderer() {
@@ -81,8 +85,8 @@ void Renderer::update(const dipole::Parameters& p) {
     const auto error=dipole::validate(p);
     if (!error.empty()) throw std::invalid_argument(error);
     const bool physicsChanged=!initialized_ || p.q!=p_.q || p.k!=p_.k || p.d!=p_.d ||
-        p.azimuth!=p_.azimuth || p.polar!=p_.polar || p.center.x!=p_.center.x ||
-        p.center.y!=p_.center.y || p.center.z!=p_.center.z;
+        p.chargeCount!=p_.chargeCount || p.azimuth!=p_.azimuth || p.polar!=p_.polar ||
+        p.center.x!=p_.center.x || p.center.y!=p_.center.y || p.center.z!=p_.center.z;
     const bool planeChanged=physicsChanged || p.xmin!=p_.xmin || p.xmax!=p_.xmax ||
         p.ymin!=p_.ymin || p.ymax!=p_.ymax || p.resolution!=p_.resolution || p.fieldDensity!=p_.fieldDensity;
     if (physicsChanged) {
@@ -147,7 +151,8 @@ void Renderer::drawPlane(Rectangle r,int view,const Visibility& v) {
         DrawLineEx(screen(segment.a),screen(segment.b),segment.level==0 ? 2.0f : 1.1f,
                    view==1 ? color(segment.level,gridLimit_) : Color{38,44,59,120});
     if (view==2 || (view==0 && v.field)) {
-        const double reference=p_.k*p_.q/(p_.d*p_.d);
+        const double scale=dipole::referenceLength(p_);
+        const double reference=p_.k*p_.q/(scale*scale);
         const double maxLength=.045*std::min(spanX,spanY); // Independent of arrow density.
         for (const auto& a : arrows_) {
             const double magnitude=std::hypot(a.field.x,a.field.y);
@@ -158,11 +163,13 @@ void Renderer::drawPlane(Rectangle r,int view,const Visibility& v) {
     }
     if (v.charges) {
         auto c=dipole::charges(p_);
-        for (int i=0;i<2;++i) {
+        // One marker in single-charge mode, two in dipole mode (indices are never renumbered).
+        for (int i=0;i<p_.chargeCount;++i) {
             auto point=screen(i==0 ? c.plus : c.minus);
-            DrawCircleV(point,7,i==0 ? MAROON : DARKBLUE);
+            const bool positive=chargeIsPositive(p_,i);
+            DrawCircleV(point,7,positive ? MAROON : DARKBLUE);
             DrawCircleLines(static_cast<int>(point.x),static_cast<int>(point.y),7,WHITE);
-            if (v.labels) DrawText(i==0 ? "+q" : "-q",static_cast<int>(point.x+9),static_cast<int>(point.y-18),18,BLACK);
+            if (v.labels) DrawText(positive ? "+q" : "-q",static_cast<int>(point.x+9),static_cast<int>(point.y-18),18,BLACK);
         }
     }
     EndScissorMode();
@@ -222,7 +229,7 @@ void Renderer::drawSpatial(Rectangle r,int view,const Visibility& v,bool blocked
             for (const auto& path : streamlines_) for (const auto point : path.points)
                 streamRadius=std::max(streamRadius,Vector3Distance(world(point,origin),streamCenter));
         }
-        extent=std::max(streamRadius*2,static_cast<float>(p_.d));
+        extent=std::max(streamRadius*2,static_cast<float>(dipole::referenceLength(p_)));
     }
     const float viewRadius=extent*1.65f;
     const Vector3 direction{std::cos(pitch_[cameraIndex])*std::cos(yaw_[cameraIndex]),
@@ -272,13 +279,13 @@ void Renderer::drawSpatial(Rectangle r,int view,const Visibility& v,bool blocked
     const bool showCharges=v.charges;
     if (showCharges) {
         auto c=dipole::charges(p_);
-        for (int i=0;i<2;++i) {
+        for (int i=0;i<p_.chargeCount;++i) {
             auto point=i==0 ? c.plus : c.minus;
             if (!isStreamlines) {
                 point.z=.3*std::min(p_.xmax-p_.xmin,p_.ymax-p_.ymin)*std::clamp(dipole::potential({point.x,point.y,p_.center.z},p_)/gridLimit_,-1.0,1.0);
             }
             chargePoints[i]=world(point,origin);
-            DrawSphere(chargePoints[i],extent*.012f,i==0 ? MAROON : DARKBLUE);
+            DrawSphere(chargePoints[i],extent*.012f,chargeIsPositive(p_,i) ? MAROON : DARKBLUE);
         }
     }
     if (isStreamlines && v.animationMarkers) for (const auto& path : streamlines_) {
@@ -288,14 +295,15 @@ void Renderer::drawSpatial(Rectangle r,int view,const Visibility& v,bool blocked
             lengths[i]=lengths[i-1]+dipole::length(path.points[i]-path.points[i-1]);
         const double total=lengths.back();
         if (total<=0) continue;
+        const double markerScale=dipole::referenceLength(p_);
         for (int marker=0;marker<2;++marker) {
-            const double distance=std::fmod(animationPhase_*p_.d+marker*.5*total,total);
+            const double distance=std::fmod(animationPhase_*markerScale+marker*.5*total,total);
             const auto upper=std::lower_bound(lengths.begin(),lengths.end(),distance);
             const size_t index=std::clamp<size_t>(static_cast<size_t>(upper-lengths.begin()),1,lengths.size()-1);
             const double segment=lengths[index]-lengths[index-1];
             const double t=segment>0 ? (distance-lengths[index-1])/segment : 0;
             const auto point=path.points[index-1]+(path.points[index]-path.points[index-1])*t;
-            DrawSphere(world(point,origin),static_cast<float>(p_.d*.018),Color{155,160,164,230});
+            DrawSphere(world(point,origin),static_cast<float>(dipole::referenceLength(p_)*.018),Color{155,160,164,230});
         }
     }
     EndMode3D();
@@ -309,7 +317,10 @@ void Renderer::drawSpatial(Rectangle r,int view,const Visibility& v,bool blocked
     std::snprintf(zLabel,sizeof(zLabel),isStreamlines ? "z %.3g m" : "z %.3g visual",origin.z+axis);
     label({axis,0,0},xLabel,MAROON); label({0,0,-axis},yLabel,DARKGREEN);
     label({0,axis,0},isStreamlines ? zLabel : "visual V height",DARKBLUE);
-    if (showCharges && v.labels) { label(chargePoints[0],"+q",MAROON); label(chargePoints[1],"-q",DARKBLUE); }
+    if (showCharges && v.labels) {
+        label(chargePoints[0],chargeIsPositive(p_,0) ? "+q" : "-q",chargeIsPositive(p_,0) ? MAROON : DARKBLUE);
+        if (p_.chargeCount!=1) label(chargePoints[1],"-q",DARKBLUE);
+    }
     EndTextureMode();
     rlSetClipPlanes(previousNear,previousFar);
     DrawTexturePro(target_.texture,{0,0,static_cast<float>(w),-static_cast<float>(h)},r,{0,0},0,WHITE);
@@ -319,7 +330,9 @@ void Renderer::drawSpatial(Rectangle r,int view,const Visibility& v,bool blocked
     } else std::snprintf(caption,sizeof(caption),"VISUAL height = %.3g * clamp(V/%.3g, -1, 1); NOT physical z",.3*std::min(p_.xmax-p_.xmin,p_.ymax-p_.ymin),gridLimit_);
     DrawText(caption,static_cast<int>(r.x+8),static_cast<int>(r.y+8),15,DARKGRAY);
     if (isStreamlines) {
-        DrawText("Markers indicate +q to -q field direction, not actual particle velocity.",
+        DrawText(p_.chargeCount==1
+            ? "Markers indicate outward field direction, not actual particle velocity."
+            : "Markers indicate +q to -q field direction, not actual particle velocity.",
             static_cast<int>(r.x+8),static_cast<int>(r.y+30),14,DARKGRAY);
         DrawText("Drag to orbit; wheel to zoom. Cached physical curves do not change with animation phase.",
             static_cast<int>(r.x+8),static_cast<int>(r.y+r.height+9),14,DARKGRAY);

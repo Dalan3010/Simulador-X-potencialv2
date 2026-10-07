@@ -277,6 +277,121 @@ void streamlineTests() {
     try { streamlines(p); } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "invalid physical parameters are rejected for streamline integration");
 }
+void singleChargeTests() {
+    Parameters p;
+    p.chargeCount = 1;
+    check(validate(p).empty(), "single-charge defaults valid");
+    auto c = charges(p);
+    check(near(c.plus.x,p.center.x) && near(c.plus.y,p.center.y) && near(c.plus.z,p.center.z),
+          "single charge sits at the center");
+    check(near(c.minus.x,p.center.x) && near(c.minus.y,p.center.y) && near(c.minus.z,p.center.z),
+          "unused partner marker sits at the center");
+    check(near(referenceLength(p),5), "single-charge reference length is half the smaller span");
+    check(near(softening(p),.005), "single-charge softening uses the reference length");
+
+    // Acceptance: V(center + r u) == k q / r and E is radial with magnitude k q / r^2.
+    const Vec3 u{0,0,1};
+    const double r = 3;
+    const Vec3 probe = p.center + u*r;
+    check(near(potential(probe,p),p.k*p.q/r,1e-5), "single-charge potential k q / r");
+    auto e = field(probe,p);
+    check(near(length(e),p.k*p.q/(r*r),1e-4), "single-charge field magnitude k q / r^2");
+    check(e.z>0 && std::abs(e.x)<1e-9 && std::abs(e.y)<1e-9, "single-charge field points radially outward");
+    auto rotated = p; rotated.center = {3,-2,4};
+    auto er = field(rotated.center + Vec3{0,2,0},rotated);
+    check(er.y>0 && std::abs(er.x)<1e-9 && std::abs(er.z)<1e-9, "single-charge field follows a translated center");
+
+    // A lone positive charge has no bisector: every grid value is strictly positive.
+    p.resolution = 15;
+    auto g = makeGrid(p);
+    check(g.values.size() == 225, "single-charge grid count");
+    check(std::all_of(g.values.begin(),g.values.end(),[](double v){ return v>0; }),
+          "single-charge grid is strictly positive");
+    check(contours(g,0).empty(), "single-charge map has no zero equipotential");
+
+    // Validation: only 1 and 2 are accepted as source counts.
+    p = Parameters{}; p.chargeCount = 0;
+    check(!validate(p).empty(), "reject zero charge count");
+    p.chargeCount = 3;
+    check(!validate(p).empty(), "reject three charges");
+    p.chargeCount = -1;
+    check(!validate(p).empty(), "reject negative charge count");
+    p.chargeCount = 2;
+    check(validate(p).empty(), "explicit dipole charge count valid");
+
+    // Dipole regression: historical values are unchanged when chargeCount == 2.
+    Parameters reg;
+    check(reg.chargeCount == 2, "dipole remains the default source");
+    check(near(referenceLength(reg),reg.d), "dipole reference length equals separation");
+    check(near(softening(reg),.002), "dipole regression adaptive softening");
+    check(near(potential({2,0,0},reg),8.99*(1/std::sqrt(1.000004)-1/std::sqrt(9.000004))),
+          "dipole regression potential value");
+    auto rc = charges(reg);
+    check(near(rc.plus.x,1) && near(rc.minus.x,-1), "dipole regression charge geometry");
+    check(near(length(rc.plus-rc.minus),2), "dipole regression separation");
+    {
+        // Point at distance 1 from the positive charge and 3 from the negative one.
+        const double eps = softening(reg);
+        const double exact = 8.99*(1/std::pow(1+eps*eps,1.5)-3/std::pow(9+eps*eps,1.5));
+        check(near(field({2,0,0},reg).x,exact,1e-5), "dipole regression field value");
+    }
+}
+void monopoleStreamlineTests() {
+    Parameters p;
+    p.chargeCount = 1;
+    StreamlineOptions options;
+    options.seedCount = 12;
+    const double scale = referenceLength(p);
+    const auto paths = streamlines(p, options);
+    check(paths.size() == static_cast<size_t>(options.seedCount), "one monopole streamline per seed");
+    for (const auto& path : paths) {
+        check(path.termination != StreamlineTermination::ReachedNegativeCharge,
+              "monopole paths never sink into a charge");
+        check(path.termination == StreamlineTermination::Escaped,
+              "monopole paths terminate by escape radius");
+        check(path.points.size() > 10 && path.points.size() <= static_cast<size_t>(options.maxSteps+1),
+              "monopole streamline length is bounded");
+        check(near(length(path.points.front() - p.center), options.seedRadius*scale, 1e-8),
+              "monopole seeds start on the reference sphere");
+        for (size_t i = 0; i < path.points.size(); ++i) {
+            const auto point = path.points[i];
+            check(std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z),
+                  "monopole points remain finite");
+            if (i > 0)
+                check(length(point-p.center) > length(path.points[i-1]-p.center),
+                      "monopole paths move strictly away from the charge");
+        }
+    }
+
+    Parameters moved = p;
+    moved.center = {3,-2,4};
+    const auto transformed = streamlines(moved, options);
+    check(transformed.size() == paths.size(), "translated single charge preserves seed count");
+    for (const auto& path : transformed) {
+        check(path.termination == StreamlineTermination::Escaped, "translated single charge still escapes");
+        check(near(length(path.points.front()-moved.center), options.seedRadius*scale, 1e-8),
+              "monopole seeds follow the translated center");
+    }
+
+    StreamlineOptions limited = options;
+    limited.maxSteps = 1;
+    const auto truncated = streamlines(p, limited);
+    check(std::all_of(truncated.begin(), truncated.end(), [](const Streamline& path) {
+        return path.termination == StreamlineTermination::StepLimit && path.points.size() <= 2;
+    }), "monopole integration stops at configured step bound");
+    limited = options;
+    limited.maxArcLength = .1;
+    const auto arcLimited = streamlines(p, limited);
+    check(std::all_of(arcLimited.begin(), arcLimited.end(), [](const Streamline& path) {
+        return path.termination == StreamlineTermination::ArcLengthLimit && path.points.size() > 1;
+    }), "monopole integration stops at configured arc-length bound");
+
+    Parameters bad = p;
+    bad.chargeCount = 0;
+    bool rejected = false;
+    try { streamlines(bad, options); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "invalid charge count is rejected for streamline integration");
+}
 void affinePlaneTopologyTests() {
     struct Case {
         const char* name;
@@ -559,7 +674,8 @@ void geometryTests() {
 }
 }
 int main() {
-    try { radialTests(); physicsTests(); geometryTests(); volumeTests(); affinePlaneTopologyTests(); streamlineTests(); }
+    try { radialTests(); physicsTests(); singleChargeTests(); geometryTests(); volumeTests();
+          affinePlaneTopologyTests(); streamlineTests(); monopoleStreamlineTests(); }
     catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
     std::cout << "PASS: " << checks << " active behavior checks\n";
 }

@@ -20,6 +20,8 @@ double evaluate(Vec3 point, const Parameters& p, const Charges& c) {
         Vec3 r = point-charge;
         return std::sqrt(r.x*r.x+r.y*r.y+r.z*r.z+eps*eps);
     };
+    // Single charge: skip the negative term so every derived view stays correct.
+    if (p.chargeCount == 1) return p.k*p.q*(1/distance(c.plus));
     return p.k*p.q*(1/distance(c.plus)-1/distance(c.minus));
 }
 }
@@ -28,6 +30,7 @@ Vec3 operator-(Vec3 a, Vec3 b) { return {a.x-b.x,a.y-b.y,a.z-b.z}; }
 Vec3 operator*(Vec3 a, double s) { return {a.x*s,a.y*s,a.z*s}; }
 double length(Vec3 a) { return std::hypot(a.x,a.y,a.z); }
 std::string validate(const Parameters& p) {
+    if (p.chargeCount != 1 && p.chargeCount != 2) return "Charge count must be 1 or 2.";
     const double numbers[] = {p.q,p.k,p.d,p.azimuth,p.polar,p.xmin,p.xmax,p.ymin,p.ymax,p.sphereRadius,p.potentialLevel,p.volumeHalfExtent,p.samplingRadius,p.visualRadius,p.fieldContrast};
     for (double v : numbers) if (!std::isfinite(v)) return "All values must be finite.";
     if (!finite(p.center)) return "Center must be finite.";
@@ -53,11 +56,17 @@ std::string validate(const Parameters& p) {
     return {};
 }
 Charges charges(const Parameters& p) {
+    // Single charge: plus is the sole charge, minus is unused.
+    if (p.chargeCount == 1) return {p.center,p.center};
     const double az = p.azimuth*pi/180, pol = p.polar*pi/180;
     Vec3 offset{std::sin(pol)*std::cos(az)*p.d/2,std::sin(pol)*std::sin(az)*p.d/2,std::cos(pol)*p.d/2};
     return {p.center+offset,p.center-offset};
 }
-double softening(const Parameters& p) { return std::max(p.d*.001,1e-6); }
+double referenceLength(const Parameters& p) {
+    if (p.chargeCount == 1) return .5*std::min(p.xmax-p.xmin,p.ymax-p.ymin);
+    return p.d;
+}
+double softening(const Parameters& p) { return std::max(referenceLength(p)*.001,1e-6); }
 double potential(Vec3 point, const Parameters& p) {
     require(p);
     if (!finite(point)) throw std::invalid_argument("Evaluation point must be finite.");
@@ -85,37 +94,55 @@ std::vector<Streamline> streamlines(const Parameters& p, const StreamlineOptions
         throw std::invalid_argument("Streamline options outside supported bounds.");
 
     const auto pair = charges(p);
-    const Vec3 axis = (pair.plus - pair.minus) * (1.0 / p.d);
-    const Vec3 reference = std::abs(axis.z) < .9 ? Vec3{0,0,1} : Vec3{0,1,0};
+    const bool monopole = p.chargeCount == 1;
+    const double reference = referenceLength(p);
     auto unit = [](Vec3 vector) {
         const double magnitude = length(vector);
         if (!std::isfinite(magnitude) || magnitude <= 1e-30)
             throw std::runtime_error("Cannot integrate a zero or nonfinite electric field.");
         return vector * (1.0 / magnitude);
     };
-    const Vec3 transverse = unit({reference.y*axis.z-reference.z*axis.y,
-        reference.z*axis.x-reference.x*axis.z, reference.x*axis.y-reference.y*axis.x});
-    const Vec3 second = {axis.y*transverse.z-axis.z*transverse.y,
-        axis.z*transverse.x-axis.x*transverse.z, axis.x*transverse.y-axis.y*transverse.x};
+    // Only a dipole has a pair axis to seed a ring about; the monopole uses a sphere.
+    Vec3 axis{}, transverse{}, second{};
+    if (!monopole) {
+        axis = (pair.plus - pair.minus) * (1.0 / p.d);
+        const Vec3 referenceAxis = std::abs(axis.z) < .9 ? Vec3{0,0,1} : Vec3{0,1,0};
+        transverse = unit({referenceAxis.y*axis.z-referenceAxis.z*axis.y,
+            referenceAxis.z*axis.x-referenceAxis.x*axis.z, referenceAxis.x*axis.y-referenceAxis.y*axis.x});
+        second = {axis.y*transverse.z-axis.z*transverse.y,
+            axis.z*transverse.x-axis.x*transverse.z, axis.x*transverse.y-axis.y*transverse.x};
+    }
     const double theta = options.seedAngleDegrees * pi / 180;
-    const double seedRadius = options.seedRadius * p.d;
-    const double stepSize = options.stepSize * p.d;
-    const double endpointRadius = options.endpointRadius * p.d;
-    const double escapeRadius = options.escapeRadius * p.d;
-    const double maxArcLength = options.maxArcLength * p.d;
+    const double seedRadius = options.seedRadius * reference;
+    const double stepSize = options.stepSize * reference;
+    const double endpointRadius = options.endpointRadius * reference;
+    const double escapeRadius = options.escapeRadius * reference;
+    const double maxArcLength = options.maxArcLength * reference;
     auto directionAt = [&](Vec3 position) { return unit(field(position, p)); };
     std::vector<Streamline> result;
     result.reserve(static_cast<size_t>(options.seedCount));
+    // Equal-area directions on the unit sphere: deterministic and axis independent.
+    constexpr double goldenAngle = 2.39996322972865332; // pi * (3 - sqrt(5)).
     for (int seed = 0; seed < options.seedCount; ++seed) {
-        const double phi = 2*pi*seed/options.seedCount;
-        const Vec3 radial = axis*std::cos(theta) +
-            (transverse*std::cos(phi) + second*std::sin(phi))*std::sin(theta);
+        Vec3 radial{};
+        if (monopole) {
+            const double y = 1 - 2*(seed+.5)/options.seedCount;
+            const double ring = std::sqrt(std::max(0.0,1-y*y));
+            const double phi = goldenAngle*seed;
+            radial = {std::cos(phi)*ring,std::sin(phi)*ring,y};
+        } else {
+            const double phi = 2*pi*seed/options.seedCount;
+            radial = axis*std::cos(theta) +
+                (transverse*std::cos(phi) + second*std::sin(phi))*std::sin(theta);
+        }
         Streamline path;
+        // charges() returns the center in both modes, so both seed from it.
         Vec3 position = pair.plus + radial*seedRadius;
         path.points.push_back(position);
         double arcLength = 0;
         for (int step = 0; step < options.maxSteps; ++step) {
-            if (length(position-pair.minus) <= endpointRadius) {
+            // A single charge has no partner to sink into; it only escapes or runs out of budget.
+            if (!monopole && length(position-pair.minus) <= endpointRadius) {
                 path.termination = StreamlineTermination::ReachedNegativeCharge;
                 break;
             }
